@@ -1,0 +1,697 @@
+---
+title: "Supervised Learning"
+author: "Gabriel Rodríguez Molina"
+date: "2023-04-16"
+output: html_document
+---
+
+```{r}
+library(tidyverse)
+library(plotly)
+library(dplyr)
+library(mice)
+library(ggplot2)
+library(cowplot)
+library(caret)
+library(FactoMineR) 
+library(DataExplorer)
+```
+
+```{r}
+set.seed(123)
+```
+
+The objective of this final project is understanding family dynamics and how they vary across different European countries. To achieve this goal, I will sue a database that has been created to provide comparative data on family outcomes and policies made by the Organization for Economic Cooperation and Development (OECD). This database is a comprehensive source of information on family-related issues across the OECD countries, which include many of the world's most developed nations. By analyzing this data, I hope to gain insights into how different factors that can shape family dynamics in different ways.
+
+Family dynamics can be influenced by a variety of factors, including cultural norms, economic conditions, and government policies. To better understand these features across Europe, I intend to examine different family indicators, which are statistical measures that provide insight into various aspects of family life. These indicators may include things like the age at which people have children, and the percentage of mortality among children.
+
+Overall, my main objective is to identify patterns and trends that may be useful for policymakers, researchers, and other stakeholders. By examining a range of family indicators and using a comprehensive database, I aim to shed light on the factors that influence some phenomena. 
+
+To achieve this I will continue using the same data set that I worked with in the MidTerm proyect, as it contains numerical variables and at least a categorical to apply both classification and regression analysis. I used write.csv to be able to import the data from the Midterm project.
+
+```{r}
+df <- read_csv("final_df.csv")
+```
+
+The final project is divided in two parts: classification (training and testing logistic regression model) and advanced regression (training linear and lasso regression or neural network, gboost etc...).
+
+I am going to try to capture both explanatory variables to understand the issue and the best predictive ones to distinguish differences in family contexts among two questions: what defines south-Europeans in relation to the rest of Europe (classification); and understand why the childbirth age is being delayed in the latest years (regression). 
+
+The first part of the project is classification, which involves training and testing a logistic regression model. Logistic regression is used to analyze the relationship between a binary outcome variable (in this case, South European vs. the rest of Europe) and one or more explanatory variables. The goal of the classification is to identify which explanatory variables are most important in distinguishing differences in family contexts between South European countries and the rest of Europe. In other words, the classification aims to capture both the explanatory relations that help us understand the issue at hand and the most predictive variables that can accurately classify the two groups.
+
+The second part of the project is advanced regression, which involves training different types of regression models (such as Lasso and Gradient Boosting) to analyze the relationship between the explanatory variables and the outcome variable (in this case, childbirth age). The regression models can help us identify which explanatory variables are most strongly associated with childbirth age and how they interact with each other. By analyzing the results of the advanced regression, we can gain insights into the factors driving the trend of delayed childbirth age and also obtain the most suitable variables to predict when is someone going to have children.
+
+# Data cleaning and descriptive tools
+
+When analyzing data, missing values in the dependent variable can be a common issue. There is an open debate among scholars about whether or not it is appropriate to impute missing values in the dependent variable. Some argue that imputing missing values in the response variable can lead to endogeneity, as we are using values of the independent variable to complete the other, biasing the results. In this case we will drop NAs for the response variable and impute them in the independent variables.
+
+```{r}
+sapply(df, function(x) sum(is.na(x))*100/nrow(df))
+```
+Country will be our dependent variable for classification, so no drop is needed. However, we will drop NAs for Age_Chilbirth. Some times it's not neccesary to apply a complex multiple imputation technique for NAs. However, in this case, even if the missing values are not randomly distributed, there is either a clear pattern in them and the proportion of missing values is low. In such cases, imputing missing values may be a good idea, as it can help to increase the sample size and reduce the potential for selection bias.
+
+Before selecting one imputation technique let's analyze one case and then generalize it. Let's start by visualizing the original data from the variable Youngadult_unemployed because it has a good distribution and one of the highest NA ratio in the data set.
+
+```{r}
+ggplot(df, aes(Youngadult_unemployed)) + 
+  geom_histogram(binwidth = 1,   color = "skyblue3", fill = "skyblue") +
+  ggtitle("Distribution of the Age variable") +
+  theme_classic() +
+  theme(plot.title = element_text(size = 18))
+```
+
+In this context, we want to try different imputation methods to select the one that fits better. We are looking for the one which respects better the original shape of our distribution, not adding too much noise changing variance or mean too much.
+
+We'll use the following MICE imputation methods:
+
+-   pmm: Predictive mean matching.
+-   cart: Classification and regression trees.
+-   laso.norm: Lasso linear regression.
+-   rf: Random forest.
+
+```{r}
+df_numeric <- df %>% select(-Country) # we include only numeric variables
+
+mice_imputed <- data.frame(
+  original = df$Youngadult_unemployed,
+  imputed_pmm = complete(mice(df_numeric, m=5, method = "pmm"))$Youngadult_unemployed, # m=5 refers to the number of times with estimate the missing value. The idea is that after estimating all missing values we can re-estimate it as now we have more information so we can do it better. We follow this 5 four times.
+  imputed_cart = complete(mice(df_numeric, m=5, method = "cart"))$Youngadult_unemployed,
+  imputed_lasso = complete(mice(df_numeric, m=5, method = "lasso.norm"))$Youngadult_unemployed,
+  imputed_rf = complete(mice(df_numeric, m=5, method='rf'))$Youngadult_unemployed
+)
+```
+
+Now let's represent all of the imputations to see which one is more convenient.
+
+```{r}
+h1 <- ggplot(mice_imputed, aes(x = original)) +
+  geom_histogram(binwidth = 1, color = "skyblue3", fill = "skyblue") +
+  ggtitle("Original distribution") +
+  theme_classic()
+h2 <- ggplot(mice_imputed, aes(x = imputed_pmm)) +
+  geom_histogram(binwidth = 1, fill = "#15ad4f", color = "#000000", position = "identity") +
+  ggtitle("PMM-imputed distribution") +
+  theme_classic()
+h3 <- ggplot(mice_imputed, aes(x = imputed_cart)) +
+  geom_histogram(binwidth = 1, fill = "#1543ad", color = "#000000", position = "identity") +
+  ggtitle("Cart-imputed distribution") +
+  theme_classic()
+h4 <- ggplot(mice_imputed, aes(x = imputed_lasso)) +
+  geom_histogram(binwidth = 1, fill = "#ad8415", color = "#000000", position = "identity") +
+  ggtitle("Lasso-imputed distribution") +
+  theme_classic()
+h5 <- ggplot(mice_imputed, aes(x = imputed_rf)) +
+  geom_histogram(binwidth = 1, fill = "#ad1185", color = "#000000", position = "identity") +
+  ggtitle("RF-imputed distribution") +
+  theme_classic()
+
+plot_grid(h1, h2, h3, h4, h5, nrow = 2, ncol = 3)
+
+```
+
+It seems like in this case the best option is PMM, even though Cart and RF respect quite well the original distribution too. The optimal way to proceed now is applying this technique to all variables in our data frame, however that would be too long to perform and show. Then, I will assume PMM is the optimal way to impute NA's for this data set, a technique that involves matching the missing observation with similar observed values and estimating the missing value using the mean and the residual difference.
+
+Let's apply PMM to all our variables then:
+
+```{r}
+mice_mod <- mice(df, m=5, method='pmm') 
+df_imputed <- complete(mice_mod, action=5)
+```
+
+## Feature engerieering
+
+We are going to create new ordinal variables from a continuous numerical variable, grouping them a set of in numbers that represent categories from "very low" to "very high". This feature engineering technique is called binning, and is the process of taking a continuous variable and divide it into smaller groups. This technique can help simplify the data and highlight patterns that may not have been apparent in the continuous variable. It is also useful to eliminate outliers that were distorting our results.
+
+In order to establish the cutoff among the different values of our continuous variable homogeneously we are taking into account the distribution of frequencies. We are using the ntile() function from the dplyr package to divide the continuous variable establishing how many cuts we want. Ntile() function will assigning each row an integer based on the distribution of values making each group contain an equal number of rows. I will assign more cuts to variables with higher variance.
+
+```{r}
+hist(df_imputed$Age_Childbirth)
+hist(df_imputed$Births_outmarr)
+hist(df_imputed$Gendergap_full)
+hist(df_imputed$Young_unemployed)
+hist(df_imputed$Youngadult_unemployed)
+hist(df_imputed$Fertility_rate_young)
+hist(df_imputed$Marriage_rate)
+hist(df_imputed$Mother_paid_paternity_wks)
+hist(df_imputed$Neonatal_mortality_rate)
+hist(df_imputed$Gender_gap)
+hist(df_imputed$Divorce_rate)
+hist(df_imputed$Fertility_rate)
+
+df_recode <-
+df_imputed %>% 
+  mutate(
+         Births_outmarr_rec = ntile(Births_outmarr, 6),
+         Gendergap_full_rec = ntile(Gendergap_full, 6),
+         Young_unemployed_rec = ntile(Young_unemployed, 4),
+         Youngadult_unemployed_rec = ntile(Youngadult_unemployed, 6),
+         Infant_mortality_rate_rec = ntile(Infant_mortality_rate, 5),
+         Father_paid_paternity_rec = ifelse(Father_paid_paternity_wks == 0, 0, 1),
+         Fertility_rate_young_rec = ntile(Fertility_rate_young, 4),
+         Marriage_rate_rec = ntile(Marriage_rate, 4),
+         Mother_paid_paternity_rec = ntile(Mother_paid_paternity_wks, 6),
+         Neonatal_mortality_rate_rec = ntile(Neonatal_mortality_rate, 4),
+         Gender_gap_rec = ntile(Gender_gap, 5),
+         Divorce_rate_rec = ntile(Divorce_rate, 4),
+         Fertility_rate_rec = ntile(Fertility_rate, 6)
+         )
+```
+
+# Classification (emphasis on interpretation)
+
+We will start by eliminating other target variables from the analysis
+
+```{r}
+df_classification <- 
+  df_recode %>% 
+  select(-Age_Childbirth)  #We cannot include the other targets in the analysis.
+
+```
+
+## Definition of our target variable: south-European countries / other European countries.
+
+We are specifically interested in exploring family dynamics in south-European countries and comparing them to the rest of Europe. By focusing on this specific group of countries, we can gain a deeper understanding of the unique cultural and societal factors that may impact this region, as well as any similarities or differences between these countries and the rest of Europe.
+
+In order to compare family dynamics between southern European countries and the rest of Europe, we will need to identify relevant variables that capture important aspects of family life, such as marriage rates and divorce rates for example. We can then use statistical methods to analyze these variables and identify any patterns or differences. By understanding the common features of families in southern European countries and how they differ from the rest of Europe, we can gain insights into the social and economic factors that life in these regions.
+
+```{r}
+df_classification <-
+  df_classification %>% 
+  mutate(
+    Country = as.factor(Country == "ESP" | Country == "ITA" | Country == "GRC" | Country == "PRT"))
+
+prop.table(table(df_classification$Country))  
+```
+We are interested in explaining the minority group conformed by a 15% of TRUE values. We need good algorithms as we have a lot of information of what socioeconomic and familiar features characterize the rest of Europe but just a few about what we are interested in and what characterizes it.
+
+Let's train and execute our logistic regression.
+
+```{r}
+in_train <- createDataPartition(df_classification$Country, p = 0.8, list = FALSE) 
+training <- df_classification[in_train,]
+testing <- df_classification[-in_train,]
+nrow(training)
+nrow(testing)
+
+logit.model = glm(Country ~ ., family=binomial(link='logit'),
+                  data=training)
+
+summary(logit.model) 
+```
+
+When a model is overfitting one of the issues it could be facing is that we included too many variables or the model is too complex. In a binomial model using too many variables can lead to capturing noise or random fluctuations in the data, rather than the underlying patterns or relationships. In our case, using 30 variables to predict family dynamics may be too many, and as a result, the model may perform well on the data it was trained on but may not generalize well to new data.
+
+To check for collinearity, we are first calculating correlation coefficients between pairs of predictors, to drop one or more of the correlated predictors and then performing dimensionality reduction using PCA or factor analysis.
+
+```{r}
+df_imputed %>% 
+  select(-Country, -Youngadult_unemployed) %>% 
+  create_report()
+```
+
+Neonatal and infant mortality rate behave almost the same, we should remove one of them or just keep one original and the other recoded. Same for gender_gap and gender_gap_full or fertility_rate_young and age_chilbrith which both obviously share an important correlation. We will eliminate base on this some continuous  and recoded variables.
+
+However, before doing that we are doing also some PCA analysis.
+
+```{r}
+pca.data <- df_classification %>%
+  select(-Country)  
+
+pca.model <- PCA(pca.data, scale.unit = TRUE, graph = FALSE)
+
+summary(pca.model)
+
+library(factoextra)
+fviz_eig(pca.model, addlabels = TRUE)
+```
+
+We are using now fviz_contrib() function from the factoextra package to visualize the contribution of each variable to each principal component. This function creates a bar plot that shows the absolute value of the variable loadings for each principal component. Variables with higher contributions will have longer bars in the plot.
+
+```{r}
+fviz_contrib(pca.model, choice = "var", axes = 1:3)
+```
+Then, we are finally keeping:
+
+```{r}
+df_class_filter <-
+  df_classification %>% 
+  select(Country, Gender_gap, Gendergap_full_rec, Youngadult_unemployed, Infant_mortality_rate, Young_unemployed_rec, Births_outmarr,
+         Infant_mortality_rate_rec, Births_outmarr_rec, Fertility_rate_young, Neonatal_mortality_rate_rec, Mother_paid_paternity_wks)
+```
+
+Let's make our model.
+
+```{r}
+logit.model <- glm(Country ~ Gender_gap + Gendergap_full_rec + Youngadult_unemployed + Births_outmarr_rec + 
+                   Fertility_rate_young + Neonatal_mortality_rate_rec + Mother_paid_paternity_wks, 
+                   family=binomial(link='logit'), data=training)
+```
+
+## Interpretation
+The odds ratio for Gender_gap is 1.549028, which indicates that for every one-unit increase in the Gender_gap variable, the odds of Country being in the positive category increases by a factor of 1.549028, assuming all other variables are held constant. An the same for the rest, the odds ratios for the other predictor variables can be interpreted as the expected change in the odds of the response variable associated with a one-unit increase in each variable, assuming all other variables are held constant.
+
+```{r}
+exp(coef(logit.model))
+```
+
+The differences in family context between Southern Europe and other regions can be explained by a combination of cultural, economic, and social factors.
+
+In terms of gender gap, Southern European societies tend to be more traditional and conservative, with strong patriarchal values and attitudes that limit women's access to the labor market. This is reflected in higher levels of gender inequality, lower participation rates of women in the workforce, and lower levels of female leadership in the workplace. These factors contribute to the higher gender gap observed in Southern Europe.
+
+Regarding young adult unemployment, Southern Europe has been hit hard by economic crises, which have had a disproportionate impact on young people entering the job market. High levels of youth unemployment, combined with a lack of opportunities for career advancement, have led to a sense of disillusionment among many young people in the region.
+
+Finally, in terms of births out of marriage, Southern Europe has a more traditional and conservative approach to family life, with strong cultural and religious values that emphasize the importance of marriage and family. This has resulted in lower rates of births out of wedlock, with couples more likely to get married before having children. This is in contrast to other regions, such as Northern Europe, where there is a more liberal and progressive attitude towards family life and relationships.
+
+Overall, these differences in family context reflect the unique cultural, economic, and social factors that shape life in different regions of Europe. While there are some common trends and values that are shared across the continent, the diversity and complexity of European society means that family life can look very different depending on where you are in the region.
+
+```{r}
+library(ggeffects) 
+
+gg.pred = ggpredict(logit.model, terms = "Gender_gap")
+plot(gg.pred) # The higher the gender gap the most probable it is that we are speaking of a southern europe country.
+
+gg.pred = ggpredict(logit.model, terms = c("Births_outmarr_rec"))
+plot(gg.pred, ci=F) # In this case the interpretation is the opposite.
+```
+
+Now we can observe in the same plot three variables at the same times. We plot "Gender_gap", "Youngadult_unemployed" and  "Births_outmarr_rec". The x axis is related to gender gap while we have different lines related to youngadult unemployemnt and the different panels are related to Births out of marriage. All lines seem to have a very common pattern even though the difference is significant, however the panels do not change at all. We could argue that the most differential variable here is gender gap, followed by young unemployment. 
+
+```{r}
+gg.pred = ggpredict(logit.model, terms = c("Gender_gap", "Youngadult_unemployed", "Births_outmarr_rec"))
+plot(gg.pred, ci=F) 
+logit.model
+```
+
+## Classification (emphasis on prediction)
+
+Let's see what happens when testing the whole data set.
+
+```{r}
+bench.model = glm(Country ~ 1, family=binomial(link='logit'), data=training)
+probability = predict(bench.model, newdata=testing, type="response")
+head(probability)
+```
+
+The predicted probabilities for Country from the bench.model are all the same. This means that the logistic regression model, which only includes an intercept term, is not able to distinguish between the different observations in the testing data set. In other words, the model is not providing any meaningful information about the relationship between the predictor variables and the response variable. It is simply predicting the same probability for all observations in the testing data set, regardless of their actual values.
+
+This highlights the importance of selecting appropriate predictor variables and properly fitting the model, as a model that only includes an intercept term is unlikely to be useful for making predictions or drawing conclusions about the data.
+
+```{r}
+prediction = as.factor(ifelse(probability > 0.5, "TRUE", "FALSE"))
+levels(prediction) = c("FALSE", "TRUE")
+head(prediction)
+```
+
+In this case, all the predicted values are false, which suggests that the logistic regression model is not able to accurately predict whenever a country is south-European in the testing data set.
+
+Let's make a model taking into account the previously selected variables.
+
+```{r}
+library(MASS)
+
+lda.model <- lda(Country ~ Gender_gap + Gendergap_full_rec + Youngadult_unemployed + Births_outmarr_rec + 
+                   Fertility_rate_young + Neonatal_mortality_rate_rec + Mother_paid_paternity_wks, 
+                   data=training)
+```
+
+Then we can examine the output which are the rows of the posterior probabilities. For example, the first row shows a very high probability of approximately 0.998 that the corresponding observation is from a south-European country, and a very low probability of approximately 0.002 that that observation are from a south-European.
+
+These probabilities will be used to classify the observations into categories by setting a threshold. If the threshold is 0.5 an observation would be classified as "TRUE" if the probability of it belonging to that category is greater than 0.5, and as "FALSE" if the probability of it belonging to that category is less than or equal to 0.5. Depending on our goals we can change the threshold, if we are interesting in predicting right all the south-Europeans even though the accuracy decreases we can reduce the threshold and vice versa.
+
+```{r}
+probability = predict(lda.model, newdata=testing)$posterior
+head(probability) 
+```
+
+```{r}
+prediction = predict(lda.model, newdata=testing)$class
+head(prediction)
+```
+
+In the confusion matrix the overall accuracy metrics suggest that the classification model based on the LDA algorithm performs reasonably well in predicting. It shows that the model predicted 139 true negatives only 6 false negatives (observations belonging to non south-European countries that were classified as south-European); and 18 true positives with 8 false positives (the opposite).
+
+```{r, echo=FALSE}
+confusionMatrix(prediction, testing$Country)$table
+confusionMatrix(prediction, testing$Country)$overall[1:2]
+
+```
+
+The point 0.476 is the point that maximizes the trade-off between the true positive rate and false positive rate.
+
+```{r}
+library(pROC)
+roc.lda=roc(testing$Country ~ probability[,2])
+roc.logit=roc(testing$Country ~ probability[,2])
+plot(roc.lda, col='blue',print.thres=TRUE)
+```
+If we change the threshold we can get a higher accuracy.
+
+```{r}
+probability = predict(lda.model, newdata=testing)$posterior
+prediction <- as.factor(ifelse(probability[,2] > 0.476, TRUE, FALSE))
+
+confusionMatrix(prediction, testing$Country)$table
+confusionMatrix(prediction, testing$Country)$overall[1:2]
+```
+
+However, if we are interested in not failing any south-European statistic even though we are going to fail predicting non south-European observations we can reduce the threshold.
+
+```{r}
+probability = predict(lda.model, newdata=testing)$posterior
+prediction <- as.factor(ifelse(probability[,2] > 0.2, TRUE, FALSE))
+
+confusionMatrix(prediction, testing$Country)$table
+confusionMatrix(prediction, testing$Country)$overall[1:2]
+```
+
+# Advanced Regression
+
+To begin this part, we will use analytical models to identify, understand and predict the factors that influence the age of child birth in families across Europe. The models we develop will aim to identify the most important variables that affect the age of birth, and by finding patterns and trends, will provide insights into why this is changing over time and what other variables explain it. By doing so, we can gain a better understanding of how the age of child birth is being influenced. We are not clearly dividing in this part between explanation and prediction because we are using data visualization that allows us to understand somehow what is the black box doing and help us to make interpretations.
+
+```{r}
+df_imputed <-
+  df_imputed %>% 
+  drop_na(Age_Childbirth)
+```
+
+Let's start by splitting our data.
+
+```{r}
+in_train <- createDataPartition(log(df_imputed$Age_Childbirth), p = 0.7, list = FALSE) 
+train <- df_imputed[ in_train,]
+test <- df_imputed[-in_train,]
+nrow(train)
+nrow(test)
+```
+
+In order to select our variables we will look at the most correlated variables with Age_Childbirth and also use create_report function to visualize the correlation between independent variables in a correlation plot.
+
+```{r}
+corr_price <- sort(cor(train[,c(3,4,5,7,8,9)])["Age_Childbirth",], decreasing = T)
+corr=data.frame(corr_price)
+
+ggplot(corr,aes(x = row.names(corr), y = corr_price)) + 
+  geom_bar(stat = "identity", fill = "lightblue") + 
+  scale_x_discrete(limits= row.names(corr)) +
+  labs(x = "Predictors", y = "Price", title = "Correlations") + 
+  theme(plot.title = element_text(hjust = 0, size = rel(1.5)),
+        axis.text.x = element_text(angle = 45, hjust = 1))
+
+create_report(train)
+```
+
+Once we have chosen our variables let's run a first multiple regression with the selected variables:
+
+```{r}
+linFit <- lm(Age_Childbirth ~ Year + Infant_mortality_rate + Fertility_rate_young + Neonatal_mortality_rate + Mother_paid_paternity_wks, data=train)
+summary(linFit)
+```
+
+The multiple R-squared value of 0.765 indicates that about 76.5% of the variability in the response variable can be explained by the independent variables included in the regression model. This suggests that the model is a good fit for the data and that the independent variables included in the model are strongly associated with the response variable. Besides that, all the variables are significant, having. ap-value below 0.05.
+
+Interpreting the coefficients of the regression model, we can see that the mean age of individuals having children has been increasing over time. This suggests that people are increasingly delaying having children, likely due to a variety of factors such as economic uncertainty (e.g. the 2008 financial crisis), changes in family structure and the increased participation of women in the labor force, and shifting values regarding the timing of parenthood in Western societies. On the other hand, one-unit increase in fertility rate among young women is associated with decrease in the mean age to have children, it makes sense that more fertile women tend to have children earlier. It's also interesting to state that families with mother paid paternity weeks have a negative relation to the age for having kids. Even if we cannot express clear causality here, we can see that having public assistance for raising kids can be useful in terms of encouraging it. Overall, these coefficients suggest that factors such as infant mortality rate, fertility rate among young women, neonatal mortality rate, and mother's paid paternity leave duration can impact the mean age to have children in different countries in Europe.
+
+Even though it can help us gaining some insight it doesn't seem to be such a good model for prediction.
+
+```{r}
+pr.multiple = exp(predict(linFit, newdata=test))
+cor(test$Age_Childbirth, pr.multiple)^2
+```
+
+## Statistical Learning tools
+
+Let's look for methods that can be more useful to explain, predict or both. We will start by using the caret package with CV.
+
+The method argument below is set to "repeatedcv", which means that repeated k-fold cross-validation will be used for model evaluation. In repeated k-fold cross-validation the data is divided into k-folds and the model is trained and tested k times. In each iteration, one of the k-folds is used as the test set and the remaining k-1 folds are used as the training set. This process is repeated r times, where r is the number of repeats specified in the repeats argument.
+
+The number argument is set to 5, which means that the data will be divided into 5 folds for each iteration of the cross-validation process. This parameter determines the number of folds in the cross-validation process.
+
+The repeats argument is set to 1, which means that the cross-validation process will be repeated once. This parameter determines how many times the cross-validation process will be repeated.
+
+```{r}
+ctrl <- trainControl(method = "repeatedcv", 
+                     number = 5, repeats = 1)
+
+```
+
+We are going to enhance our data by changing its structure in order to improve its performance. We will apply log transformations to some variables, and create interactions between correlated variables. By doing this, we will try to create more optimal distributions for our data, which will help us to get better results.
+
+```{r}
+ggplot(train, aes(x = log(Infant_mortality_rate/Year), y = Age_Childbirth)) + 
+  geom_point() +
+  labs(x = "Longitude", y = "Price")
+
+ggplot(train, aes(x =log(Neonatal_mortality_rate) , y = log(Age_Childbirth))) + 
+  geom_point() +
+  labs(x = "Longitude", y = "Price")
+
+ggplot(train, aes(x = Mother_paid_paternity_wks*Fertility_rate_young, y = log(Age_Childbirth))) + 
+  geom_point() +
+  labs(x = "Longitude", y = "Price")
+
+ggplot(train, aes(x = log(Neonatal_mortality_rate*Infant_mortality_rate), y = log(Age_Childbirth))) + 
+  geom_point() +
+  labs(x = "Longitude", y = "Price")
+```
+
+We are using Statistical Learning to capture non-linear relationships in our data. By altering the values of our variables, we can identify patterns and trends that may not be obvious when looking at the data in its raw form. This allows us to make better predictions and gain a better understanding of the underlying relationships between the variables. Statistical Learning also provides a framework to measure the accuracy of our predictions and identify any non-linearities that we may have missed.
+
+```{r}
+linFit <- lm(log(Age_Childbirth) ~ log(Infant_mortality_rate/Year) + Infant_mortality_rate + Fertility_rate_young + 
+  log(Neonatal_mortality_rate)+ Mother_paid_paternity_wks*Fertility_rate_young +
+  log(Neonatal_mortality_rate*Infant_mortality_rate), data=train)
+
+summary(linFit)
+
+pr.multiple = exp(predict(linFit, newdata=test))
+cor(test$Age_Childbirth, pr.multiple)^2
+```
+
+The Multiple R-squared value has increased to 0.81, which indicates that the model is now better able to explain the relationship between the variables in the dataset. At the same time, the prediction accuracy of the model has also improved to 0.77%.
+
+The general idea is that as infant mortality rate, neonatal mortality rate, fertility rate among young people, and mother-paid paternity leave increase, the average age to have children decreases. However, when the product of neonatal mortality rate and infant mortality rate, as well as the product of fertility rate among young people and the number of weeks of paid paternity leave for the mother, increases, the average age to have children increases. However, even if we cannot infer causality here these results contradict the way we usually perceive things, as we typically believe that an increase in fertility rate among young people, as well as an increase in maternal paid paternity leave, is related to a decrease in the average age to have children.
+
+In order to do statistical learning we are using these two models:
+
+```{r}
+Model1 <- Age_Childbirth ~ Year + Infant_mortality_rate + Fertility_rate_young + Neonatal_mortality_rate + 
+               Mother_paid_paternity_wks
+
+Model2 <- log(Age_Childbirth) ~ log(Infant_mortality_rate/Year) + Infant_mortality_rate + 
+               Fertility_rate_young + log(Neonatal_mortality_rate)+ Mother_paid_paternity_wks*Fertility_rate_young + 
+                log(Neonatal_mortality_rate*Infant_mortality_rate)
+```
+
+We create a data frame with all the predictors and start training different models. 
+
+```{r}
+test_results <- data.frame(Age_Childbirth = log(test$Age_Childbirth))
+```
+
+Firstly we are trying linear model.
+
+```{r}
+lm_tune <- train(Model1, data = train, 
+                 method = "lm", 
+                 preProc=c('scale', 'center'),
+                 trControl = ctrl)
+```
+
+We start by training a linear model, setting the method argument to "lm". Additionally, the preProc argument is used to specify that we want to scale and center the predictor variables before fitting the model. Scaling and centering are preprocessing steps that can help improve the performance of the model by standardizing the predictor variables. Then we apply cross-validation which takes the value ctrl which was explained before.
+
+```{r}
+test_results$lm <- predict(lm_tune, test)
+postResample(pred = test_results$lm,  obs = test_results$Age_Childbirth)
+```
+
+The results in the prediction are not raised too much in this case. Let's keep trying other models.
+
+```{r}
+for_tune <- train(Model1, data = train, 
+                  method = "leapForward", 
+                  preProc=c('scale', 'center'),
+                  tuneGrid = expand.grid(nvmax = 1:6),
+                  trControl = ctrl)
+for_tune
+plot(for_tune)
+
+for_tune2 <- train(Model2, data = train, 
+                  method = "leapForward", 
+                  preProc=c('scale', 'center'),
+                  tuneGrid = expand.grid(nvmax = 1:8),
+                  trControl = ctrl)
+for_tune2
+plot(for_tune)
+```
+In this case we are using forward stepwise regression method, that typically starts with an empty subset of predictor variables, and then selects the variable that is most strongly correlated with the response variable. Next, the method adds the next most strongly correlated variable that is not already in the subset. The method continues to add variables in this way until no more variables are available or a stopping criterion is met. 
+
+In the first case, the model had 6 variables but the value of R-Squared is good. However, the RMSE and MAE values were too high, indicating that the model is not very accurate. In the second case, the model had a higher R-Squared value but the RMSE and MAE values were very low, indicating that the model was more accurate and therefore more suitable for use. This suggest that feature ingenieering was useful for this context.
+
+The plot helps to identify the value of nvmax (the hyperparameter) that leads to the best performance of the model, showing the performance of the linear regression model which is the maximum number of variables in the model. The RMSE (root mean squared error) values are plotted on the y-axis, while the values of nvmax are plotted on the x-axis and it help us to select the optimal value of nvmax that minimizes the RMSE of the model. As we can see, the RMSE values generally decrease as nvmax increases, which is expected as more variables are added to the model. However, at some point, adding more variables can lead to overfitting and result in higher RMSE values on new unseen data. In this case 6 and 7 variables seems to be the optimal value.
+
+```{r}
+coef(for_tune2$finalModel, for_tune$bestTune$nvmax)
+```
+
+Analyzing coefficients from the best nvmax and the best model we can draw the following conclusions:
+Infant and neonatal mortality rates are negatively associated with the mean age to have kids. This suggests that countries with higher infant and neonatal mortality rates tend to have younger fathers. There can be many socioeconomical features going on inside this process, but usually more tradicional and less economically developed countries tend to show higher children mortality and lower childbirth age. Fertility rate among young women is also negatively associated with the mean age to have kids, as a higher fertility rates expresses also that women tend to have children younger. As we could see before, mother paid paternity weeks are negatively associated with the mean age to have kids, countries with more generous parental leave policies tend to have younger fathers.
+
+In this case R-squared doesn't vary much but it must be stated that RMSE and MAE have decrease a lot, which is indicates that the models are better able to predict the outcome variable and have lower prediction errors at the same time.
+
+```{r}
+test_results$frw <- predict(for_tune, test)
+postResample(pred = test_results$frw,  obs = test_results$Age_Childbirth)
+```
+
+Let's repeat the process with backward regression.
+
+```{r}
+back_tune <- train(Model2, data = train, 
+                   method = "leapBackward", 
+                   preProc=c('scale', 'center'),
+                   tuneGrid = expand.grid(nvmax = 1:8),
+                   trControl = ctrl)
+back_tune
+plot(back_tune)
+```
+
+```{r}
+coef(back_tune$finalModel, back_tune$bestTune$nvmax)
+test_results$bw <- predict(back_tune, test)
+postResample(pred = test_results$bw,  obs = test_results$Age_Childbirth)
+```
+
+Results here seem to be very a bit worse.
+
+We will end up the statistical learning tools using lasso regression, which is  very efficient while gathering good results, being more used than ridge or elastic net. The main distinction between ridge and lasso regression is that ridge regression can only reduce the slope (create a bias) asymptotically close to 0, whereas lasso regression can reduce the slope all the way to 0. In ridge regression, lambda can be any value from 0 to positive infinity. Lasso Regression is a little more effective than ridge regression at lowering the variance in models that contain a lot of superfluous variables because it can remove useless variables from equations.
+
+We need to select a greed for the lambda hyper-parameter
+
+```{r}
+lasso_grid <- expand.grid(fraction = seq(.01, 1, length = 100)) 
+
+lasso_tune <- train(Model2, data = train,
+                    method='lasso',
+                    preProc=c('scale','center'),
+                    tuneGrid = lasso_grid,
+                    trControl=ctrl)
+plot(lasso_tune)
+
+lasso_tune$bestTune
+
+test_results$lasso <- predict(lasso_tune, test)
+postResample(pred = test_results$lasso,  obs = test_results$Age_Childbirth)
+
+```
+
+Results are not enhanced either this time. Let's try now we are goin to try some machine learning tools to see if they can improve the prediction.
+
+The kNN algorithm works by finding the k nearest neighbors of a given data point in the training dataset. In classification tasks, the class label of the data point is determined by the majority class label of its k nearest neighbors. Some times it's the best option even if it's not a strong tool nowadays compared to others. Usually it's a very good tool when we are predicting locations.
+
+Let's plot this time both models for each ML method, as many of the differences stated before didn't depend that much on the method but on the feature ingenieering process:
+
+```{r}
+modelLookup('kknn')
+
+knn_tune <- train(Model1, 
+                  data = train,
+                  method = "kknn",   
+                  preProc=c('scale','center'),
+                  tuneGrid = data.frame(kmax=c(11,13,15,19,21),distance=2,kernel='optimal'),
+                  trControl = ctrl)
+plot(knn_tune)
+test_results$knn <- predict(knn_tune, test)
+postResample(pred = test_results$knn,  obs = test_results$Age_Childbirth)
+```
+
+R Square is much better maintaining relatively higher RMSE and MAE.
+
+```{r}
+knn_tune2 <- train(Model2, 
+                  data = train,
+                  method = "kknn",   
+                  preProc=c('scale','center'),
+                  tuneGrid = data.frame(kmax=c(11,13,15,19,21),distance=2,kernel='optimal'),
+                  trControl = ctrl)
+plot(knn_tune)
+test_results$knn <- predict(knn_tune2, test)
+postResample(pred = test_results$knn,  obs = test_results$Age_Childbirth)
+```
+
+Using the second model R-squared seems to show a very good performance while maintaining a very los RMSE and MAE, however now we will focus more on having high r-squared and predictaiblity
+
+In relation to kNN, Random Forest is generally better suited for handling high-dimensional data with many features, while KNN is better suited for low-dimensional data with fewer features. Random Forests are also better at handling noisy data and outliers, while KNN is more sensitive to them.
+
+```{r}
+rf_tune <- train(Model1, 
+                 data = train,
+                 method = "rf",
+                 preProc=c('scale','center'),
+                 trControl = ctrl,
+                 ntree = 100,
+                 tuneGrid = data.frame(mtry=c(1,3,5,7)), #the number of times by chance the algorithm is going to choose to make 100 trees
+                 importance = TRUE)
+
+plot(rf_tune)
+test_results$rf <- predict(rf_tune, test)
+postResample(pred = test_results$rf,  obs = test_results$Age_Childbirth)
+```
+In this case rs-quared is a bit higher than before. It's the best we have obtained.
+
+We are going to train a gradient boosting model and a neural network model to end up with
+
+```{r warning=FALSE}
+xgb_tune <- train(Model1, 
+                  data = train,
+                  method = "xgbTree", 
+                  preProc=c('scale','center'),
+                  objective="reg:squarederror",
+                  trControl = ctrl,
+                  tuneGrid = expand.grid(nrounds = c(500,1000), max_depth = c(5,6,7), eta = c(0.01, 0.1, 1),
+                                         gamma = c(1, 2, 3), colsample_bytree = c(1, 2),
+                                         min_child_weight = c(1), subsample = c(0.2,0.5,0.8)))
+test_results$xgb <- predict(xgb_tune, test)
+postResample(pred = test_results$xgb,  obs = test_results$Age_Childbirth)
+```
+
+Gradient boosting didn't improve the results needing a much higher computational demand than rf.
+
+## Explanation
+Years ago, it was impossible to interpret the results from our machine learning tools, but now we have ways to identify the most important variables in our dataset in terms of predicting power according to our selected techniques. The best methods are interpreting are K-Nearest Neighbors (KNN), Random Forest (RF), and XGBoost (XGB). The negative part of representing most important variable is that we don't know the sign, however we assume it based in previous results.
+
+```{r}
+library(pdp)
+plot(varImp(rf_tune, scale = F), scales = list(y = list(cex = .95))) 
+partial(rf_tune, pred.var = "Fertility_rate_young", plot = TRUE, rug = TRUE)
+``` 
+In general, the ability of young adults to conceive and have children is negatively related to the average age at which women give birth in Europe. Female fertility declines with age, with a sharp drop in fertility occurring after the age of 35. Therefore, delaying childbearing can reduce the chances of successful conception and pregnancy, and can increase the risk of complications during pregnancy and childbirth.
+
+At the same time, the availability of paid parental leave policies can positively affect fertility rates among young adults. This is because such policies provide financial support and job protection to parents who take time off work to care for a newborn child, making it easier for them to balance work and family responsibilities. By reducing the financial and logistical barriers to having children, paid parental leave policies can encourage young adults to start families earlier, and to have more children overall.
+
+Finally, as we stated before, the relationship between fertility, parental leave policies, and the average age at which women give birth can be influenced by broader trends and cultural factors. For example, in some European countries, there has been a trend towards delaying childbirth and having fewer children overall, due to factors such as changing social norms, greater access to contraception, and increased educational and career opportunities for women. However, policies that support work-family balance, such as paid parental leave, can help to mitigate the negative effects of these trends on fertility rates.
+
+```{r}
+plot(varImp(xgb_tune, scale = F), scales = list(y = list(cex = .95)))
+partial(xgb_tune, pred.var = "Year", plot = TRUE, rug = TRUE)
+```
+
+It's interesting to observe that the 3 first most influential variables are repeated in this case.
+
+```{r}
+plot(varImp(knn_tune, scale = F), scales = list(y = list(cex = .95)))
+```
+
+KNN adds infant morality rate: Delayed childbearing can lead to an increased risk of certain health problems for both mothers and babies, which in turn can contribute to higher infant mortality rates. Older mothers are more likely to experience pregnancy complications and their babies may be more likely to be born prematurely or with low birth weight. These health problems can increase the risk of infant mortality.
+
+On the other hand, policies that support work-family balance, such as paid parental leave, can have a positive impact on infant mortality rates. Paid parental leave policies can encourage mothers to take time off work to care for their newborn babies, which can have a beneficial effect on both maternal and infant health. Studies have shown that paid parental leave is associated with lower rates of infant mortality, as well as improved health outcomes for mothers and children.
+
+
+In this case rf was the best model, which means it's the most better in this case, but we cannot assume it's the best in all context or when we receive new information. Usually we use the top 5% or 10% of the models and then we make a postResample. We will execute here the best 3, have 3 prediction and compute the average of them. To ensemble our results we are going to pick the methods that have had better performance in terms of R-Squared, which is what measures the predictability.
+
+```{r}
+test_results$comb = (test_results$xgb + test_results$knn + test_results$rf)/3 
+postResample(pred = test_results$comb,  obs = test_results$Age_Childbirth)
+```
+
+Only combining them it was possible to achieve 90 R-Squared
+
